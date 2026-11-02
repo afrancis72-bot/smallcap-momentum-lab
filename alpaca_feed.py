@@ -12,12 +12,12 @@ SUPPORTED_EXCHANGES = {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "NYSEARCA", "TX
 # Alpaca classifies exchange-listed warrants, rights, ETFs and units as us_equity.
 # Exclude them from the primary common-stock research universe, including sub-$1 symbols.
 _NON_COMMON_INSTRUMENT = re.compile(
-    r"\\b(warrants?|rights?|units?|preferred|preference shares?|"
+    r"\b(warrants?|rights?|units?|preferred|preference shares?|"
     r"exchange.traded funds?|ETFs?|ETNs?|exchange.traded notes?|"
-    r"notes? due [0-9]|debentures?|closed.end funds?)\\b",
+    r"notes? due [0-9]|debentures?|closed.end funds?)\b",
     flags=re.IGNORECASE,
 )
-_NON_COMMON_SUFFIX = re.compile(r"(?:[.\\-](?:WS?|RT?|U|P|PR))$", re.IGNORECASE)
+_NON_COMMON_SUFFIX = re.compile(r"(?:[.-](?:WS?|RT?|U|P|PR))$", re.IGNORECASE)
 
 
 def is_common_equity_asset(asset):
