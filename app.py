@@ -7,12 +7,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from alpaca_feed import AlpacaReadOnly, DataError, is_common_equity_asset
-from research_engine import snapshot_table, prepare_bars, vwap_bars, backtest_opening_range, trade_summary
+from research_engine import snapshot_table, prepare_bars, backtest_opening_range, trade_summary
+from sessions import market_session, SESSION_CLOCK, session_vwap, session_summary
 
 st.set_page_config(page_title="Momentum Lab", page_icon="📈", layout="wide")
 st.title("📈 Small-Cap Momentum Lab")
-st.caption("Exchange-listed discovery · $0.10 floor · Source-linked news · Rule-based paper research")
-st.warning("Prototype, not a live trading-alert system. Free Alpaca IEX quotes and volume represent ONE exchange, not total U.S. trading. Historical bars may lag by 15+ minutes. No real orders or guaranteed edge.")
+st.caption("Exchange-listed discovery · $0.10 floor · 4:00 a.m.–8:00 p.m. ET session research · Paper-only")
+st.warning("Research prototype, not a live trading-alert system. Premarket 4:00–9:30 a.m. ET · Regular 9:30 a.m.–4:00 p.m. · After-hours 4:00–8:00 p.m. Free IEX is partial-market data. Historical bars intentionally lag at least 16 minutes; no orders or guaranteed edge.")
 
 def secret_value(name):
     try:
@@ -44,14 +45,17 @@ with st.sidebar:
     st.caption("After-hours review can show closing-session data. It is never a live trade signal.")
 
 now_et = datetime.now(ZoneInfo("America/New_York"))
-market_minutes = now_et.hour * 60 + now_et.minute
-is_regular_hours = now_et.weekday() < 5 and 570 <= market_minutes < 960
+current_session, _ = market_session(now_et)
+session_open = current_session in SESSION_CLOCK
 if mode == "Recent-session research (36 hours)":
     max_age_minutes = 36 * 60
 elif mode == "Intraday only (10 min)":
     max_age_minutes = 25 if feed == "delayed_sip" else 10
 else:
-    max_age_minutes = (25 if feed == "delayed_sip" else 10) if is_regular_hours else 36 * 60
+    # Extended-hours quotes are often sparser than normal-session quotes.
+    max_age_minutes = (25 if feed == "delayed_sip" else
+                       (10 if current_session == "Regular" else 20)) if session_open else 36 * 60
+require_active_session = session_open and mode != "Recent-session research (36 hours)"
 
 
 client = AlpacaReadOnly(key, secret, feed) if key and secret else None
@@ -64,10 +68,14 @@ scan_tab, ticker_tab, replay_tab, journal_tab = st.tabs(
 with scan_tab:
     st.subheader("Market discovery (on-demand)")
     st.write("Scans Alpaca's **active exchange-listed common-stock universe**, then requests price snapshots in batches. No ticker list required. Click again to refresh; there is no background scanner or automatic alerting yet.")
-    st.caption("Quote context: " + now_et.strftime("%a %b %d, %Y %I:%M %p ET") +
-               " · Mode: " + mode + " · Maximum accepted price age: " + str(max_age_minutes) + " minutes.")
-    if not is_regular_hours or max_age_minutes > 60:
-        st.info("**Session research, not a live trading scan:** older closing-session snapshots are permitted. Candidates require a fresh liquidity/quote check before they are usable.")
+    st.caption("Current session: " + current_session + " · " +
+               now_et.strftime("%a %b %d, %Y %I:%M %p ET") +
+               " · Filter: " + mode + " · Max price age: " + str(max_age_minutes) + " minutes.")
+    if require_active_session:
+        st.info("**Active " + current_session + " session:** only observations printed during this session today can pass. An older regular-market price cannot masquerade as an after-hours mover.")
+    else:
+        st.info("**Historical snapshot research only:** stale and previous-session data may appear; check the Price session ET and Price age columns before interpreting results.")
+    st.caption("Price change is measured from Alpaca's *previous daily bar close*, not necessarily from today's 4:00 p.m. close. Full-session shares are NOT a premarket/after-hours volume measurement.")
 
     if st.button("Scan exchange-listed market", type="primary", disabled=not client):
         if min_price > max_price:
@@ -85,7 +93,8 @@ with scan_tab:
                     settings = {"min_price": min_price, "max_price": max_price,
                                 "min_gap": min_gap, "min_dollar_volume": min_turnover,
                                 "max_spread": max_spread,
-                                "max_age_minutes": max_age_minutes}
+                                "max_age_minutes": max_age_minutes,
+                                "require_active_session": require_active_session}
                     frame = snapshot_table(assets, snapshots, settings)
                     st.session_state["scan_result"] = (frame, len(symbols), requested,
                                                        len(snapshots), errors,
@@ -124,12 +133,15 @@ with scan_tab:
                            "smallcap_scan.csv", mime="text/csv")
     else:
         st.caption("No market scan yet. No invented candidates will be shown.")
-    st.info("V1 excludes OTC/pink sheets. Exchange-listed sub-dollar stocks are supported if Alpaca supplies quotes. A large price move or high IEX volume alone is not a buy signal.")
+    st.info("OTC/pink sheets are excluded. IEX may have very few premarket/after-hours prints for active stocks on other venues. This is a manual refresh—not a streaming scanner. Alpaca's separate overnight (8 p.m.–4 a.m.) service is not included.")
 
 with ticker_tab:
     st.subheader("Manual ticker research")
     ticker = st.text_input("Ticker symbol", max_chars=20).upper().strip()
     days = st.slider("Lookback (calendar days)", 2, 30, 7)
+    chart_session = st.selectbox("Chart session (Eastern Time)", [
+        "All sessions (4 a.m.–8 p.m.)", "Premarket", "Regular", "After-hours"
+    ])
     if st.button("Load ticker", disabled=not (client and ticker)):
         try:
             snapshot, _, errors = client.snapshots([ticker])
@@ -160,17 +172,30 @@ with ticker_tab:
         if truncated:
             st.warning("Bar pagination truncated; the replay may be incomplete.")
         if not bars.empty:
-            bars = vwap_bars(bars)
-            x = bars["timestamp"].dt.tz_convert("America/New_York")
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=x, open=bars["open"], high=bars["high"],
-                                         low=bars["low"], close=bars["close"], name="Candles"))
-            fig.add_trace(go.Scatter(x=x, y=bars["vwap"], mode="lines", name="Session VWAP"))
-            fig.update_layout(height=500, xaxis_rangeslider_visible=False,
-                              xaxis_title="US Eastern time", yaxis_title="Price ($)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("Premarket, regular and after-hours session breakdown")
+            st.caption("All figures use the chosen Alpaca feed. IEX volumes may omit trades from other exchanges; session moves are measured from each session's FIRST returned bar.")
+            st.dataframe(session_summary(bars), use_container_width=True, hide_index=True)
+            session_bars = session_vwap(bars)
+            if chart_session == "All sessions (4 a.m.–8 p.m.)":
+                plot_bars = session_bars[session_bars["session"].isin(SESSION_CLOCK)]
+            else:
+                plot_bars = session_bars[session_bars["session"] == chart_session]
+            if plot_bars.empty:
+                st.warning("No 1-minute bars in the chosen session for this symbol and feed. This doesn't prove the stock was inactive elsewhere.")
+            else:
+                x = plot_bars["timestamp"].dt.tz_convert("America/New_York")
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(x=x, open=plot_bars["open"],
+                                             high=plot_bars["high"], low=plot_bars["low"],
+                                             close=plot_bars["close"], name="1-minute candles"))
+                fig.add_trace(go.Scatter(x=x, y=plot_bars["session_vwap"],
+                                         mode="lines", name="Session VWAP (resets by session)"))
+                fig.update_layout(height=500, xaxis_rangeslider_visible=False,
+                                  xaxis_title="Eastern time", yaxis_title="Price ($)")
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Source: " + source + " · Each session has its own VWAP. Charts are historical and intentionally delayed.")
         else:
-            st.warning("No minute bars returned; ticker may be untraded on this feed.")
+            st.warning("No minute bars returned for this ticker and lookback from the selected feed.")
         st.subheader("Original-source headlines")
         for item in news[:12]:
             st.write("**" + item.get("headline", "(No headline)") + "**")
@@ -183,7 +208,10 @@ with ticker_tab:
 
 with replay_tab:
     st.subheader("1-minute opening-range breakout replay")
-    st.caption("Build 9:30–9:34 opening range. Enter at next minute open after first completed candle closes above both the range and VWAP. Long only; conservative stop-first rule.")
+    session_test = st.selectbox("Session to replay", ["Regular", "Premarket", "After-hours"])
+    st.caption("Start of opening range (Eastern): " +
+               {"Regular": "9:30 a.m.", "Premarket": "4:00 a.m.", "After-hours": "4:00 p.m."}[session_test] +
+               ". Entry is assumed at NEXT bar open after first completed close above both the opening range and session-specific VWAP. Long only.")
     upload = st.file_uploader("Optional historical 1-minute CSV (t,o,h,l,c,v; t is timezone-aware)", type="csv")
     choose_csv = st.checkbox("Use uploaded CSV instead of last loaded ticker", value=True)
     col1, col2, col3 = st.columns(3)
@@ -199,7 +227,8 @@ with replay_tab:
             else:
                 bars = prepare_bars(raw)
                 result = backtest_opening_range(bars, target_r=target_r,
-                                                max_hold=max_hold, slippage_bps=slip)
+                                                max_hold=max_hold, slippage_bps=slip,
+                                                session=session_test)
                 st.session_state["replay_result"] = (result, trade_summary(result),
                                                       len(bars), bars["day"].nunique())
         except (ValueError, KeyError, TypeError) as exc:
@@ -216,7 +245,7 @@ with replay_tab:
         st.dataframe(result, use_container_width=True, hide_index=True)
         st.download_button("Export simulated trades", result.to_csv(index=False),
                            "orb_replay.csv", mime="text/csv")
-    st.caption("Important limitations: minute bars cannot reproduce quotes, actual fills, halts, gap risk, stock selection survivorship, or market impact. Backtest results are hypothetical, not forward-validated.")
+    st.caption("Premarket and after-hours tests require five consecutive observed opening minutes. Sparse IEX data often means NO replay trade, which is safer than inventing one. Minute bars cannot model bid/ask execution, halts, market depth, gaps or survivorship; results are hypothetical.")
 
 with journal_tab:
     st.subheader("Paper-trade journal")
