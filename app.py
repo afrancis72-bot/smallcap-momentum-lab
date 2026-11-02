@@ -114,6 +114,47 @@ with scan_tab:
                                                        datetime.now(timezone.utc).isoformat(), feed)
                 except DataError as exc:
                     st.error(str(exc))
+    auto_discover = st.toggle(
+        "Auto-discover SIP movers every 90 seconds while this page is open",
+        disabled=(feed != "sip" or client is None),
+        help="Read-only consolidated SIP snapshots across the exchange-listed universe. Paid SIP required. No background activity after this app stops.",
+    )
+    if auto_discover:
+        @st.fragment(run_every="90s")
+        def refresh_full_universe():
+            now_scan = datetime.now(timezone.utc)
+            last = st.session_state.get("last_auto_scan")
+            seconds_since = (now_scan - last).total_seconds() if last else float("inf")
+            if seconds_since >= 85:
+                st.session_state["last_auto_scan"] = now_scan
+                try:
+                    with st.spinner("Refreshing consolidated SIP market discovery…"):
+                        assets = st.session_state.get("assets")
+                        if assets is None:
+                            assets = client.assets()
+                        assets = [a for a in assets if is_common_equity_asset(a)]
+                        st.session_state["assets"] = assets
+                        symbols = [a["symbol"] for a in assets]
+                        snapshots, requested, errors = client.snapshots(symbols)
+                        settings = {
+                            "min_price": min_price, "max_price": max_price,
+                            "min_gap": min_gap, "min_dollar_volume": min_turnover,
+                            "max_spread": max_spread,
+                            "max_age_minutes": max_age_minutes,
+                            "require_active_session": require_active_session,
+                        }
+                        frame = snapshot_table(assets, snapshots, settings)
+                        st.session_state["scan_result"] = (
+                            frame, len(symbols), requested, len(snapshots), errors,
+                            datetime.now(timezone.utc).isoformat(), feed,
+                        )
+                        st.session_state.pop("auto_scan_error", None)
+                except DataError as exc:
+                    st.session_state["auto_scan_error"] = str(exc)
+                st.rerun(scope="app")
+        refresh_full_universe()
+    if st.session_state.get("auto_scan_error") and auto_discover:
+        st.error("Auto-scan: " + st.session_state["auto_scan_error"])
     if "scan_result" in st.session_state:
         frame, universe, requested, received, errors, ts, source = st.session_state["scan_result"]
         passing = frame[frame["Status"].isin(["Review", "Watch — verify quote", "Corporate-action check"])] if not frame.empty else frame
