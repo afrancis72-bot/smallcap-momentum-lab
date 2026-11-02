@@ -28,7 +28,16 @@ with st.sidebar:
     feed_name = st.selectbox("Data feed", ["Free IEX (partial coverage)", "SIP (paid)", "Delayed SIP"])
     feed = {"Free IEX (partial coverage)": "iex", "SIP (paid)": "sip",
             "Delayed SIP": "delayed_sip"}[feed_name]
-    st.caption("IEX runs 8 a.m.–5 p.m. ET, not the full 4 a.m.–8 p.m. extended session. Delayed SIP may cover the complete session if your subscription permits. This app only uses GET requests.")
+    st.caption("IEX runs 8 a.m.–5 p.m. ET, not the full 4 a.m.–8 p.m. extended session. Delayed SIP snapshots may require account permission. This app only uses GET requests.")
+    if st.button("Test Alpaca keys with one IEX stock", disabled=not (key and secret)):
+        try:
+            test = AlpacaReadOnly(key, secret, "iex").test_iex_connection("AAPL")
+            if test:
+                st.success("IEX data request authenticated. Keys worked; another feed may have different permissions.")
+            else:
+                st.warning("Request succeeded, but no AAPL snapshot came back. The API key was not explicitly rejected.")
+        except DataError as exc:
+            st.error(str(exc))
     st.divider()
     st.subheader("Discovery filters")
     min_price = st.number_input("Min price ($)", min_value=0.10, max_value=25.0, value=0.10, step=0.10)
@@ -145,10 +154,18 @@ with ticker_tab:
     chart_session = st.selectbox("Chart session (Eastern Time)", [
         "All sessions (4 a.m.–8 p.m.)", "Premarket", "Regular", "After-hours"
     ])
+    history_source = st.selectbox("Historical 1-minute price/volume source", [
+        "Consolidated SIP (15+ min delayed)", "IEX exchange (partial market)"
+    ])
+    historical_feed = "sip" if history_source.startswith("Consolidated") else "iex"
+    st.caption("This is independent of the scanner feed. Alpaca generally permits historical SIP data older than 15 minutes on free accounts; check data entitlements if rejected.")
     if st.button("Load ticker", disabled=not (client and ticker)):
         try:
-            snapshot, _, errors = client.snapshots([ticker])
-            raw_bars, truncated = client.bars(ticker, days)
+            # Snapshot access and historical SIP access are separate entitlements.
+            # Use a universally accessible IEX snapshot to avoid a delayed SIP
+            # snapshot permission failure blocking available historical research.
+            snapshot, _, errors = AlpacaReadOnly(key, secret, "iex").snapshots([ticker])
+            raw_bars, truncated = client.bars(ticker, days, historical_feed=historical_feed)
             try:
                 news, news_error = client.news(ticker), ""
             except DataError as exc:
@@ -157,6 +174,7 @@ with ticker_tab:
                                                  raw_bars, truncated, news, errors,
                                                  news_error, feed, datetime.now(timezone.utc).isoformat())
             st.session_state["latest_bars"] = raw_bars
+            st.session_state["ticker_history_feed"] = historical_feed
         except DataError as exc:
             st.error(str(exc))
     if "ticker_result" in st.session_state:
@@ -164,7 +182,8 @@ with ticker_tab:
         snap = snap or {}
         trade, quote = snap.get("latestTrade") or {}, snap.get("latestQuote") or {}
         previous = snap.get("prevDailyBar") or {}
-        st.caption(f"{symbol} · fetched {timestamp} UTC · feed {source}; historical bars end at least 16 minutes before request.")
+        history_feed_used = st.session_state.get("ticker_history_feed", "iex")
+        st.caption(f"{symbol} · fetched {timestamp} UTC · snapshot source: IEX · historical bars: {history_feed_used.upper()} (at least 16 minutes delayed).")
         a, b, c = st.columns(3)
         a.metric("Last IEX/SIP trade", trade.get("p", "Unavailable"))
         b.metric("Previous close", previous.get("c", "Unavailable"))
@@ -176,7 +195,7 @@ with ticker_tab:
             st.warning("Bar pagination truncated; the replay may be incomplete.")
         if not bars.empty:
             st.subheader("Premarket, regular and after-hours session breakdown")
-            st.caption("All figures use the chosen Alpaca feed. IEX volumes may omit trades from other exchanges; session moves are measured from each session's FIRST returned bar.")
+            st.caption("All session figures are from the HISTORICAL " + history_feed_used.upper() + " feed. IEX excludes other exchanges; SIP includes consolidated market prints. Session moves are measured from each session's FIRST observed bar.")
             st.dataframe(session_summary(bars), use_container_width=True, hide_index=True)
             session_bars = session_vwap(bars)
             if chart_session == "All sessions (4 a.m.–8 p.m.)":
@@ -196,7 +215,7 @@ with ticker_tab:
                 fig.update_layout(height=500, xaxis_rangeslider_visible=False,
                                   xaxis_title="Eastern time", yaxis_title="Price ($)")
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption("Source: " + source + " · Each session has its own VWAP. Charts are historical and intentionally delayed.")
+                st.caption("Source: Alpaca historical " + history_feed_used.upper() + " · Session VWAP resets at each session. Charts are intentionally at least 16 minutes delayed.")
         else:
             st.warning("No minute bars returned for this ticker and lookback from the selected feed.")
         st.subheader("Original-source headlines")
