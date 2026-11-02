@@ -36,6 +36,11 @@ class DataError(RuntimeError):
     pass
 
 
+class AccessError(DataError):
+    """Access problem: a different data feed will require an explicit user choice."""
+    pass
+
+
 class AlpacaReadOnly:
     def __init__(self, key, secret, feed="iex"):
         if not key or not secret:
@@ -57,8 +62,18 @@ class AlpacaReadOnly:
             return response.json()
         except requests.HTTPError as exc:
             code = exc.response.status_code if exc.response is not None else "?"
-            if code in (401, 403):
-                raise DataError(f"Alpaca HTTP {code}: credentials or market-data subscription not authorized.") from exc
+            if code == 401:
+                raise AccessError(
+                    "Alpaca HTTP 401: authentication rejected on this request. "
+                    "Verify the paper API key and secret; if Free IEX works with "
+                    "these same keys, the selected feed or account access needs checking."
+                ) from exc
+            if code == 403:
+                raise AccessError(
+                    "Alpaca HTTP 403: this feed or data request is not permitted "
+                    "for your account. Use Free IEX for snapshots or select "
+                    "historical SIP bars (15+ minutes old) for research."
+                ) from exc
             if code == 429:
                 raise DataError("Alpaca rate limit (429). Do not refresh again immediately.") from exc
             raise DataError(f"Alpaca HTTP {code}: request failed.") from exc
@@ -80,24 +95,36 @@ class AlpacaReadOnly:
                 })
                 snapshots.update(result or {})
                 completed += len(batch)
+            except AccessError:
+                # Fail immediately instead of attempting 100+ additional batches.
+                raise
             except DataError as exc:
                 errors.append(f"Batch {offset // batch_size + 1}: {exc}")
                 if "429" in str(exc):
                     break
         return snapshots, completed, errors
 
-    def bars(self, symbol, days=7, max_pages=6):
+    def test_iex_connection(self, symbol="AAPL"):
+        """Single-symbol, read-only key diagnostic; NOT a full-universe scan."""
+        obj = self._get(MARKET + "/v2/stocks/snapshots", {
+            "symbols": symbol, "feed": "iex",
+        })
+        return isinstance(obj, dict) and symbol in obj
+
+    def bars(self, symbol, days=7, max_pages=6, historical_feed=None):
         clean = symbol.upper().strip()
         if not clean or len(clean) > 20 or not all(ch.isalnum() or ch in ".-" for ch in clean):
             raise DataError("Invalid ticker symbol.")
         end = datetime.now(timezone.utc) - timedelta(minutes=16)
         start = end - timedelta(days=int(days))
-        # 'delayed_sip' is a latest/snapshot feed, NOT a historical bars feed.
-        # Full-exchange historical bars older than 15 minutes use feed='sip'.
-        historical_feed = "sip" if self.feed == "delayed_sip" else self.feed
+        # Delayed SIP is a snapshot feed; historical SIP bars >15 min old
+        # can be requested separately without assuming snapshot entitlement.
+        selected_feed = historical_feed or ("sip" if self.feed == "delayed_sip" else self.feed)
+        if selected_feed not in {"iex", "sip"}:
+            raise DataError("Historical bars feed must be IEX or SIP.")
         params = {
             "start": start.isoformat(), "end": end.isoformat(),
-            "timeframe": "1Min", "limit": 10000, "feed": historical_feed,
+            "timeframe": "1Min", "limit": 10000, "feed": selected_feed,
             "adjustment": "raw", "sort": "asc",
         }
         bars, truncated = [], False
