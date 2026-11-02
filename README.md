@@ -11,6 +11,16 @@
 - **Honest provenance.** IEX is only one exchange: the free scanner does NOT know consolidated trade volume or true whole-market relative volume, and its ranking is NOT a probability of winning.
 
 
+## Real-time 4 a.m.–8 p.m. market monitoring (paid SIP)
+
+**Real-time market-wide extended-hours discovery requires Alpaca Algo Trader Plus (SIP) entitlement**; IEX is partial-market and does not operate throughout extended hours. Choosing SIP in the app cannot grant a paid subscription. A successful free IEX key test is not proof that SIP is authorized.
+
+In the scanner, select **SIP (paid)**. Run the **Scan exchange-listed market** button once to find current-session candidates. You may enable **Auto-discover SIP movers every 90 seconds** to repeat the full-universe snapshot scan while the app page stays open; this consumes API requests and stops when Streamlit isn't running. The scan remains a *periodic snapshot*—not an exchange-wide tick-by-tick stream.
+
+For genuine event-driven prices, use **Start real-time SIP watch**. The app connects to `wss://stream.data.alpaca.markets/v2/sip` and receives trade/quote events for the top fresh scan candidates plus any symbols you type (maximum 40). The display refreshes every three seconds. It calls a trade **LIVE** only when its timestamp is from the current Eastern session and is at most two minutes old. If nothing trades, the entry is waiting or stale; it is never replaced with an invented price or today's regular-market close. Connection denial is displayed in the app, without falling back silently to IEX.
+
+**Setup:** Keep API keys in Streamlit Secrets, not a public GitHub file. Check that your account is authorized for the paid SIP feed; no subscription is purchased by this code. Restrict access to the deployed app and review your exchange/vendor market-data redistribution terms before sharing consolidated live quotes with anyone else. The separate 8 p.m.–4 a.m. overnight feed is not supported here. This is read-only market research, not trading automation.
+
 ## Premarket and after-hours support (Nov 2026)
 
 **Implemented:** price-session validation in the automatic stock scanner, per-ticker session-specific historical candlestick charts, session-level OHLC/volume/VWAP summaries, and distinct opening-range backtests for premarket, regular, and after-hours.
@@ -67,7 +77,7 @@ APCA_API_KEY_ID = "your-paper-key"
 APCA_API_SECRET_KEY = "your-paper-secret"
 ~~~
 
-The repo itself is **not deployed**. The private repository may require granting Streamlit Cloud GitHub access. Do not store credentials in source files.
+Deployment is managed separately in Streamlit Cloud. Do not store credentials in source files or expose your private subscription through an unrestricted public app.
 
 ## Scanner and data limitations
 
