@@ -7,13 +7,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from alpaca_feed import AlpacaReadOnly, DataError, is_common_equity_asset
+from live_sip import SIPLiveStream
 from research_engine import snapshot_table, prepare_bars, backtest_opening_range, trade_summary
 from sessions import market_session, SESSION_CLOCK, session_vwap, session_summary, feed_market_active
 
 st.set_page_config(page_title="Momentum Lab", page_icon="📈", layout="wide")
 st.title("📈 Small-Cap Momentum Lab")
 st.caption("Exchange-listed discovery · $0.10 floor · 4:00 a.m.–8:00 p.m. ET session research · Paper-only")
-st.warning("Research prototype, not a live trading-alert system. Premarket 4:00–9:30 a.m. ET · Regular 9:30 a.m.–4:00 p.m. · After-hours 4:00–8:00 p.m. Free IEX is partial-market data. Historical bars intentionally lag at least 16 minutes; no orders or guaranteed edge.")
+st.warning("Research prototype, not a live trading-alert system. Premarket 4:00–9:30 a.m. ET · Regular 9:30 a.m.–4:00 p.m. · After-hours 4:00–8:00 p.m. Free IEX is partial-market data; live extended-hours data requires SIP entitlement. No orders or guaranteed edge.")
 
 def secret_value(name):
     try:
@@ -28,7 +29,7 @@ with st.sidebar:
     feed_name = st.selectbox("Data feed", ["Free IEX (partial coverage)", "SIP (paid)", "Delayed SIP"])
     feed = {"Free IEX (partial coverage)": "iex", "SIP (paid)": "sip",
             "Delayed SIP": "delayed_sip"}[feed_name]
-    st.caption("IEX runs 8 a.m.–5 p.m. ET, not the full 4 a.m.–8 p.m. extended session. Delayed SIP snapshots may require account permission. This app only uses GET requests.")
+    st.caption("IEX runs 8 a.m.–5 p.m. ET, not the full 4 a.m.–8 p.m. extended session. Delayed SIP snapshots may require account permission. The market scanner uses GET and optional live SIP watchlist uses a read-only WebSocket.")
     if st.button("Test Alpaca keys with one IEX stock", disabled=not (key and secret)):
         try:
             test = AlpacaReadOnly(key, secret, "iex").test_iex_connection("AAPL")
@@ -43,15 +44,15 @@ with st.sidebar:
     min_price = st.number_input("Min price ($)", min_value=0.10, max_value=25.0, value=0.10, step=0.10)
     max_price = st.number_input("Max price ($)", min_value=0.10, max_value=100.0, value=25.0, step=1.0)
     min_gap = st.slider("Minimum move from previous close (%)", 0, 30, 5)
-    min_turnover = st.number_input("Minimum IEX dollar turnover ($)", 0, 1_000_000, 15_000, 5_000)
-    max_spread = st.slider("Maximum IEX spread (%)", 0.25, 10.0, 1.0, 0.25)
+    min_turnover = st.number_input("Minimum feed dollar turnover ($)", 0, 1_000_000, 15_000, 5_000)
+    max_spread = st.slider("Maximum feed spread (%)", 0.25, 10.0, 1.0, 0.25)
     st.divider()
     mode = st.selectbox("Snapshot freshness mode", [
         "Automatic (recommended)",
         "Intraday only (10 min)",
         "Recent-session research (36 hours)",
     ])
-    st.caption("After-hours review can show closing-session data. It is never a live trade signal.")
+    st.caption("Historical review can show stale data; current-session filtering is required for live research.")
 
 now_et = datetime.now(ZoneInfo("America/New_York"))
 current_session, _ = market_session(now_et)
@@ -77,7 +78,7 @@ scan_tab, ticker_tab, replay_tab, journal_tab = st.tabs(
 
 with scan_tab:
     st.subheader("Market discovery (on-demand)")
-    st.write("Scans Alpaca's **active exchange-listed common-stock universe**, then requests price snapshots in batches. No ticker list required. Click again to refresh; there is no background scanner or automatic alerting yet.")
+    st.write("Scans Alpaca's **active exchange-listed common-stock universe** using batched snapshots. The full-universe scan is on-demand; the optional SIP watchlist below continuously streams selected symbols.")
     st.caption("Current session: " + current_session + " · " +
                now_et.strftime("%a %b %d, %Y %I:%M %p ET") +
                " · Filter: " + mode + " · Max price age: " + str(max_age_minutes) + " minutes.")
@@ -87,7 +88,7 @@ with scan_tab:
         st.info("**Active " + current_session + " session:** only observations printed during this session today can pass. An older regular-market price cannot masquerade as an after-hours mover.")
     else:
         st.info("**Historical snapshot research only:** stale and previous-session data may appear; check the Price session ET and Price age columns before interpreting results.")
-    st.caption("Price change is measured from Alpaca's *previous daily bar close*, not necessarily from today's 4:00 p.m. close. Full-session shares are NOT a premarket/after-hours volume measurement.")
+    st.caption("Price change uses Alpaca's previous daily bar close, NOT necessarily today's 4:00 p.m. close. Daily shares are not isolated to the selected session. An older trade is never a live print.")
 
     if st.button("Scan exchange-listed market", type="primary", disabled=not client):
         if min_price > max_price:
@@ -150,7 +151,56 @@ with scan_tab:
                            "smallcap_scan.csv", mime="text/csv")
     else:
         st.caption("No market scan yet. No invented candidates will be shown.")
-    st.info("OTC/pink sheets are excluded. IEX may have very few premarket/after-hours prints for active stocks on other venues. This is a manual refresh—not a streaming scanner. Alpaca's separate overnight (8 p.m.–4 a.m.) service is not included.")
+    st.info("OTC/pink sheets are excluded. IEX cannot discover full-market after-hours movers. Broad discovery is an on-demand snapshot scan; the SIP watchlist streams only selected symbols. Overnight 8 p.m.–4 a.m. ET is excluded.")
+
+    st.divider()
+    st.subheader("⚡ Live premarket and after-hours tape — SIP")
+    st.caption("With paid SIP entitlement, Alpaca WebSocket streams real consolidated trades/quotes from 4:00 a.m. to 8:00 p.m. ET for up to 40 selected symbols. The display redraws every 3 seconds; full-market discovery remains an on-demand scan.")
+    if feed != "sip":
+        st.warning("For live 4 a.m.–8 p.m. prices, choose SIP (paid) in the sidebar. Neither Free IEX nor Delayed SIP provides live full-market extended-hours coverage.")
+    previous_scan = st.session_state.get("scan_result")
+    live_candidates = []
+    if previous_scan and previous_scan[-1] == "sip":
+        scanned = previous_scan[0]
+        needed = {"Matches active session", "Price age (min)", "Status", "Ticker"}
+        if not scanned.empty and needed.issubset(scanned.columns):
+            fresh = scanned[(scanned["Matches active session"] == True)
+                            & (scanned["Price age (min)"] <= 3)
+                            & (scanned["Status"] != "Exclude")]
+            live_candidates = fresh["Ticker"].head(25).tolist()
+    custom_watch = st.text_input("Extra live tickers (comma-separated, e.g. INO,PERI)", key="sip_watch_input")
+    watch_symbols = list(dict.fromkeys(
+        live_candidates + [s.strip().upper() for s in custom_watch.replace(" ", ",").split(",") if s.strip()]
+    ))[:40]
+    st.caption("Watching after Start: " + (", ".join(watch_symbols) if watch_symbols else "none — scan with SIP or enter ticker symbols"))
+    start_col, stop_col = st.columns(2)
+    if start_col.button("Start real-time SIP watch", disabled=feed != "sip" or not client or not watch_symbols):
+        previous_stream = st.session_state.get("sip_live_stream")
+        if previous_stream:
+            previous_stream.stop()
+        try:
+            live_stream = SIPLiveStream(key, secret, watch_symbols)
+            st.session_state["sip_live_stream"] = live_stream
+            live_stream.start()
+        except ValueError as exc:
+            st.error(str(exc))
+    if stop_col.button("Stop live watch", disabled=not st.session_state.get("sip_live_stream")):
+        st.session_state["sip_live_stream"].stop()
+        st.session_state.pop("sip_live_stream", None)
+
+    @st.fragment(run_every="3s")
+    def render_live_sip():
+        stream = st.session_state.get("sip_live_stream")
+        if stream:
+            st.caption("SIP: " + stream.status + " · " +
+                       datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p ET"))
+            live_frame = pd.DataFrame(stream.snapshot())
+            if not live_frame.empty:
+                st.dataframe(live_frame, use_container_width=True, hide_index=True)
+                st.caption("LIVE means a real SIP trade in the active Eastern session, at most 2 minutes old. A stale or blank entry is not live, even if the WebSocket is connected. Watch spreads and trading halts.")
+        else:
+            st.caption("No live stream running. Select the paid SIP feed, scan or enter a ticker, and Start.")
+    render_live_sip()
 
 with ticker_tab:
     st.subheader("Manual ticker research")
@@ -169,7 +219,7 @@ with ticker_tab:
             # Snapshot access and historical SIP access are separate entitlements.
             # Use a universally accessible IEX snapshot to avoid a delayed SIP
             # snapshot permission failure blocking available historical research.
-            snapshot, _, errors = AlpacaReadOnly(key, secret, "iex").snapshots([ticker])
+            snapshot, _, errors = client.snapshots([ticker])
             raw_bars, truncated = client.bars(ticker, days, historical_feed=historical_feed)
             try:
                 news, news_error = client.news(ticker), ""
@@ -188,9 +238,10 @@ with ticker_tab:
         trade, quote = snap.get("latestTrade") or {}, snap.get("latestQuote") or {}
         previous = snap.get("prevDailyBar") or {}
         history_feed_used = st.session_state.get("ticker_history_feed", "iex")
-        st.caption(f"{symbol} · fetched {timestamp} UTC · snapshot source: IEX · historical bars: {history_feed_used.upper()} (at least 16 minutes delayed).")
+        bar_delay_note = ("up to current time with paid SIP" if source == "sip" and history_feed_used == "sip" else "at least 16 minutes behind")
+        st.caption(f"{symbol} · fetched {timestamp} UTC · snapshot: {source.upper()} · historical bars: {history_feed_used.upper()} ({bar_delay_note}).")
         a, b, c = st.columns(3)
-        a.metric("Last IEX/SIP trade", trade.get("p", "Unavailable"))
+        a.metric(f"Last {source.upper()} trade", trade.get("p", "Unavailable"))
         b.metric("Previous close", previous.get("c", "Unavailable"))
         c.metric("Bid / ask", str(quote.get("bp", "?")) + " / " + str(quote.get("ap", "?")))
         if errors or news_error:
@@ -220,7 +271,7 @@ with ticker_tab:
                 fig.update_layout(height=500, xaxis_rangeslider_visible=False,
                                   xaxis_title="Eastern time", yaxis_title="Price ($)")
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption("Source: Alpaca historical " + history_feed_used.upper() + " · Session VWAP resets at each session. Charts are intentionally at least 16 minutes delayed.")
+                st.caption("Source: Alpaca historical " + history_feed_used.upper() + " · VWAP resets each session. " + bar_delay_note + ".")
         else:
             st.warning("No minute bars returned for this ticker and lookback from the selected feed.")
         st.subheader("Original-source headlines")
