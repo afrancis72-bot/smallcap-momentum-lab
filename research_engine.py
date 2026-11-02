@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import math
 import pandas as pd
+from sessions import market_session, SESSION_CLOCK, session_vwap
 
 NY = ZoneInfo("America/New_York")
 
@@ -40,6 +41,10 @@ def snapshot_table(assets, snapshots, settings):
     lo, hi = settings["min_price"], settings["max_price"]
     max_age = settings.get("max_age_minutes", 10)
     now = settings.get("now") or datetime.now(timezone.utc)
+    current_session, current_local = market_session(now)
+    require_active_session = bool(settings.get("require_active_session", False))
+    if current_session not in SESSION_CLOCK:
+        require_active_session = False
     for asset in assets:
         sym = asset.get("symbol", "")
         s = snapshots.get(sym) or {}
@@ -51,12 +56,21 @@ def snapshot_table(assets, snapshots, settings):
         trade_price, minute_price, daily_price = (num(trade.get("p")),
                                                   num(minute.get("c")),
                                                   num(daily.get("c")))
-        if trade_price is not None and trade_price > 0:
-            price, price_time = trade_price, trade.get("t")
-        elif minute_price is not None and minute_price > 0:
-            price, price_time = minute_price, minute.get("t")
+        # A snapshot's latestTrade may be OLDER than its minuteBar in sparse
+        # extended sessions. Select the most recent timestamped observation.
+        choices = [
+            (trade_price, trade.get("t"), "Trade"),
+            (minute_price, minute.get("t"), "Minute bar"),
+            (daily_price, daily.get("t"), "Daily bar"),
+        ]
+        viable = [(v, stamp, source) for v, stamp, source in choices if v is not None and v > 0]
+        timed = [(v, stamp, source) for v, stamp, source in viable if _age_minutes(stamp, now) is not None]
+        if timed:
+            price, price_time, price_source = min(timed, key=lambda row: _age_minutes(row[1], now))
+        elif viable:
+            price, price_time, price_source = viable[0]
         else:
-            price, price_time = daily_price, daily.get("t")
+            price, price_time, price_source = None, None, "Unavailable"
         prior = num(previous.get("c"))
         if price is None or price <= 0 or prior is None or prior <= 0 or not (lo <= price <= hi):
             continue
@@ -71,6 +85,14 @@ def snapshot_table(assets, snapshots, settings):
         price_age = _age_minutes(price_time, now)
         quote_age = _age_minutes(quote.get("t"), now)
         recent = price_age is not None and price_age <= max_age
+        observed_session, observed_local = market_session(price_time)
+        matches_active_session = (
+            current_session in SESSION_CLOCK
+            and observed_session == current_session
+            and current_local is not None
+            and observed_local is not None
+            and current_local.date() == observed_local.date()
+        )
 
         hard_reasons = []
         soft_reasons = []
@@ -80,6 +102,8 @@ def snapshot_table(assets, snapshots, settings):
             hard_reasons.append("IEX turnover below threshold")
         if not recent:
             hard_reasons.append("Price data too old for selected mode")
+        if require_active_session and not matches_active_session:
+            hard_reasons.append("No price reported in active session")
         if spread_pct is None:
             soft_reasons.append("Bid/ask unavailable — verify liquidity")
         elif spread_pct > settings["max_spread"]:
@@ -96,10 +120,13 @@ def snapshot_table(assets, snapshots, settings):
         rows.append({
             "Ticker": sym, "Name": asset.get("name", ""), "Exchange": asset.get("exchange", ""),
             "Price": round(price, 4), "Change %": round(gap, 2),
-            "IEX day shares": int(vol), "IEX turnover $": round(turnover, 2),
+            "Feed day shares (not session)": int(vol),
+            "Feed day turnover $ (not session)": round(turnover, 2),
             "IEX spread %": round(spread_pct, 2) if spread_pct is not None else None,
+            "Price source": price_source, "Price session ET": observed_session,
             "Price data UTC": str(price_time or ""), "Price age (min)": price_age,
             "Quote age (min)": quote_age, "Timely for mode": recent,
+            "Matches active session": matches_active_session,
             "Research score": score, "Status": status,
             "Reason": "; ".join(hard_reasons + soft_reasons),
         })
@@ -150,24 +177,30 @@ def vwap_bars(bars):
 
 
 def backtest_opening_range(bars, target_r=1.5, max_hold=45, slippage_bps=10,
-                           fee_per_side=0.0, min_bars=6):
+                           fee_per_side=0.0, min_bars=6, session="Regular"):
     """Conservative 1-minute-bar ORB replay, LONG paper trades only.
 
-    First 5 min (9:30 through 9:34) establish opening high and low.
+    First 5 minutes of selected session establish opening high and low.
+    Premarket 04:00, Regular 09:30, After-hours 16:00 ET.
+    If the first 5 consecutive minute bars are missing, NO trade is inferred.
     Signal: subsequent completed bar closes strictly above the opening high AND VWAP.
     Entry: NEXT bar open with positive slippage.
     Stop: opening range low. Target: entry + target_r * initial risk.
     If stop & target touch the SAME minute, STOP wins. Overnight positions forbidden.
     No fills on days where the required bars are missing. Not a tick-level execution model.
     """
+    if session not in SESSION_CLOCK:
+        raise ValueError("Unknown trading session")
     if bars.empty:
         return pd.DataFrame()
-    frame = vwap_bars(bars)
+    start, end = SESSION_CLOCK[session]
+    frame = session_vwap(bars)
+    frame["vwap"] = frame["session_vwap"]
     trades = []
     for date, day in frame.groupby("day", sort=True):
-        d = day[(day["clock"] >= 570) & (day["clock"] <= 960)].reset_index(drop=True)
-        opening = d[(d["clock"] >= 570) & (d["clock"] <= 574)]
-        if len(opening) != 5 or sorted(opening["clock"].tolist()) != list(range(570, 575)):
+        d = day[(day["clock"] >= start) & (day["clock"] < end)].reset_index(drop=True)
+        opening = d[(d["clock"] >= start) & (d["clock"] < start + 5)]
+        if len(opening) != 5 or sorted(opening["clock"].tolist()) != list(range(start, start + 5)):
             continue
         opening_high = float(opening["high"].max())
         opening_low = float(opening["low"].min())
@@ -175,7 +208,7 @@ def backtest_opening_range(bars, target_r=1.5, max_hold=45, slippage_bps=10,
             continue
         for i in range(5, len(d) - 1):
             signal = d.iloc[i]
-            if (signal["clock"] > 690 or signal["close"] <= opening_high
+            if (signal["clock"] > start + 120 or signal["close"] <= opening_high
                 or pd.isna(signal["vwap"]) or signal["close"] <= signal["vwap"]):
                 continue
             prior = d.iloc[i - 1]
@@ -210,7 +243,7 @@ def backtest_opening_range(bars, target_r=1.5, max_hold=45, slippage_bps=10,
                 break
             pnl = exit_price - entry - 2 * fee_per_side
             trades.append({
-                "Date": str(date), "Signal time ET": f"{int(signal['clock']//60):02d}:{int(signal['clock']%60):02d}",
+                "Date": str(date), "Session": session, "Signal time ET": f"{int(signal['clock']//60):02d}:{int(signal['clock']%60):02d}",
                 "Entry": round(entry, 5), "Exit": round(exit_price, 5),
                 "Stop": round(stop, 5), "Target": round(target, 5),
                 "Net P&L / share": round(pnl, 5),
