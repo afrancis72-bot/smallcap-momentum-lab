@@ -220,3 +220,32 @@ def test_recent_minute_bar_outweighs_stale_trade_in_extended_hours():
     assert row["Price session ET"] == "After-hours"
     assert row["Matches active session"]
     assert row["Status"] == "Review"
+
+
+
+def test_iex_cannot_cover_earliest_or_latest_extended_hours():
+    from sessions import feed_market_active
+    assert not feed_market_active("iex", "2026-11-03T12:59:00Z")  # 7:59 ET
+    assert feed_market_active("iex", "2026-11-03T13:00:00Z")  # 8:00 ET
+    assert feed_market_active("iex", "2026-11-03T21:59:00Z")  # 4:59 ET
+    assert not feed_market_active("iex", "2026-11-03T22:00:00Z")  # 5:00 ET
+    assert feed_market_active("sip", "2026-11-03T09:00:00Z")  # 4:00 ET
+    assert feed_market_active("delayed_sip", "2026-11-03T23:59:00Z")  # 6:59 ET
+    assert not feed_market_active("sip", "2026-11-04T01:00:00Z")  # 8:00 ET
+
+
+def test_delayed_sip_historical_bars_use_sip_not_invalid_delayed_sip_feed():
+    from alpaca_feed import AlpacaReadOnly
+    client = AlpacaReadOnly("synthetic", "synthetic", "delayed_sip")
+    requests_seen = []
+
+    def stub_get(url, params=None):
+        requests_seen.append(dict(params))
+        return {"bars": []}
+
+    client._get = stub_get
+    bars, truncated = client.bars("DEMO", days=2)
+    assert bars == []
+    assert truncated is False
+    assert requests_seen[0]["feed"] == "sip"
+    assert pd.Timestamp(requests_seen[0]["end"]) <= pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=15)
