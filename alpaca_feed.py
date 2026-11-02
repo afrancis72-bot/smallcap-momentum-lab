@@ -115,11 +115,13 @@ class AlpacaReadOnly:
         clean = symbol.upper().strip()
         if not clean or len(clean) > 20 or not all(ch.isalnum() or ch in ".-" for ch in clean):
             raise DataError("Invalid ticker symbol.")
-        end = datetime.now(timezone.utc) - timedelta(minutes=16)
-        start = end - timedelta(days=int(days))
         # Delayed SIP is a snapshot feed; historical SIP bars >15 min old
-        # can be requested separately without assuming snapshot entitlement.
+        # can be requested separately without assuming real-time entitlement.
         selected_feed = historical_feed or ("sip" if self.feed == "delayed_sip" else self.feed)
+        # Only authorized real-time SIP may request the last 15 minutes.
+        delay = 0 if selected_feed == "sip" and self.feed == "sip" else 16
+        end = datetime.now(timezone.utc) - timedelta(minutes=delay)
+        start = end - timedelta(days=int(days))
         if selected_feed not in {"iex", "sip"}:
             raise DataError("Historical bars feed must be IEX or SIP.")
         params = {
