@@ -16,10 +16,30 @@ def num(value, default=None):
         return default
 
 
+def _age_minutes(value, now):
+    if not value:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            return None
+        age = (now - timestamp.astimezone(timezone.utc)).total_seconds() / 60
+        return round(age, 1) if age >= 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def snapshot_table(assets, snapshots, settings):
-    """Process exchange-listed assets. IEX-only volumes are NEVER called consolidated RVOL."""
+    """Research-only exchange-listed stock screen; NEVER a real-time buy alert.
+
+    Missing bid/ask quotes may generate WATCH (not REVIEW) when price/turnover
+    criteria pass. Stale price evidence always excludes. After-close mode
+    accepts an older *timestamped* snapshot solely for retrospective research.
+    """
     rows = []
     lo, hi = settings["min_price"], settings["max_price"]
+    max_age = settings.get("max_age_minutes", 10)
+    now = settings.get("now") or datetime.now(timezone.utc)
     for asset in assets:
         sym = asset.get("symbol", "")
         s = snapshots.get(sym) or {}
@@ -28,52 +48,69 @@ def snapshot_table(assets, snapshots, settings):
         daily = s.get("dailyBar") or {}
         previous = s.get("prevDailyBar") or {}
         minute = s.get("minuteBar") or {}
-        price = num(trade.get("p")) or num(minute.get("c")) or num(daily.get("c"))
+        trade_price, minute_price, daily_price = (num(trade.get("p")),
+                                                  num(minute.get("c")),
+                                                  num(daily.get("c")))
+        if trade_price is not None and trade_price > 0:
+            price, price_time = trade_price, trade.get("t")
+        elif minute_price is not None and minute_price > 0:
+            price, price_time = minute_price, minute.get("t")
+        else:
+            price, price_time = daily_price, daily.get("t")
         prior = num(previous.get("c"))
-        if price is None or prior is None or prior <= 0 or not (lo <= price <= hi):
+        if price is None or price <= 0 or prior is None or prior <= 0 or not (lo <= price <= hi):
             continue
         gap = 100 * (price / prior - 1)
-        vol = num(daily.get("v"), 0)
+        vol = num(daily.get("v"), 0) or 0
         bid, ask = num(quote.get("bp")), num(quote.get("ap"))
         spread_pct = (100 * (ask - bid) / ((ask + bid)/2)
-                      if bid and ask and ask >= bid else None)
+                      if bid is not None and ask is not None
+                      and bid > 0 and ask >= bid else None)
         turnover = price * vol
-        quote_time = quote.get("t") or trade.get("t") or minute.get("t") or ""
-        fresh = False
-        if quote_time:
-            try:
-                t = datetime.fromisoformat(quote_time.replace("Z", "+00:00"))
-                fresh = 0 <= (datetime.now(timezone.utc) - t).total_seconds() <= settings.get("max_age_minutes", 10) * 60
-            except ValueError:
-                pass
-        reasons = []
+        price_time = price_time or minute.get("t") or daily.get("t") or trade.get("t") or quote.get("t")
+        price_age = _age_minutes(price_time, now)
+        quote_age = _age_minutes(quote.get("t"), now)
+        recent = price_age is not None and price_age <= max_age
+
+        hard_reasons = []
+        soft_reasons = []
         if gap < settings["min_gap"]:
-            reasons.append("Gap below threshold")
+            hard_reasons.append("Move below threshold")
         if turnover < settings["min_dollar_volume"]:
-            reasons.append("IEX turnover below threshold")
+            hard_reasons.append("IEX turnover below threshold")
+        if not recent:
+            hard_reasons.append("Price data too old for selected mode")
         if spread_pct is None:
-            reasons.append("No usable two-sided IEX quote")
+            soft_reasons.append("Bid/ask unavailable — verify liquidity")
         elif spread_pct > settings["max_spread"]:
-            reasons.append("Spread too wide")
-        if not fresh:
-            reasons.append("Quote/trade may be stale")
-        # Deliberately NOT a winning probability, RVOL, or a buy signal.
+            hard_reasons.append("Spread too wide")
+        elif quote_age is None or quote_age > max_age:
+            soft_reasons.append("Bid/ask timestamp too old — verify liquidity")
+
+        # Not a probability, a forecast, nor evidence of an economic edge.
         gap_score = min(35.0, max(0.0, gap) * 2.0)
         turn_score = min(35.0, max(0.0, math.log10(max(turnover, 1)) - 3) * 10)
         spread_score = max(0.0, 30.0 * (1 - (spread_pct or 100) / max(settings["max_spread"], 0.01)))
         score = round(gap_score + turn_score + spread_score, 1)
+        status = "Exclude" if hard_reasons else ("Watch — verify quote" if soft_reasons else "Review")
         rows.append({
             "Ticker": sym, "Name": asset.get("name", ""), "Exchange": asset.get("exchange", ""),
             "Price": round(price, 4), "Change %": round(gap, 2),
             "IEX day shares": int(vol), "IEX turnover $": round(turnover, 2),
             "IEX spread %": round(spread_pct, 2) if spread_pct is not None else None,
-            "Quote UTC": quote_time, "Fresh <=10m": fresh,
-            "Research score": score, "Status": "Review" if not reasons else "Exclude",
-            "Reason": "; ".join(reasons)
+            "Price data UTC": str(price_time or ""), "Price age (min)": price_age,
+            "Quote age (min)": quote_age, "Timely for mode": recent,
+            "Research score": score, "Status": status,
+            "Reason": "; ".join(hard_reasons + soft_reasons),
         })
     if not rows:
-        return pd.DataFrame(columns=["Ticker", "Price", "Change %", "Status", "Reason"])
-    return pd.DataFrame(rows).sort_values(["Status", "Research score"], ascending=[False, False]).reset_index(drop=True)
+        return pd.DataFrame(columns=[
+            "Ticker", "Price", "Change %", "Status", "Reason",
+        ])
+    frame = pd.DataFrame(rows)
+    order = {"Review": 0, "Watch — verify quote": 1, "Exclude": 2}
+    frame["_order"] = frame["Status"].map(order)
+    return frame.sort_values(["_order", "Research score"], ascending=[True, False]).drop(columns=["_order"]).reset_index(drop=True)
 
 
 def prepare_bars(raw):
