@@ -249,3 +249,63 @@ def test_delayed_sip_historical_bars_use_sip_not_invalid_delayed_sip_feed():
     assert truncated is False
     assert requests_seen[0]["feed"] == "sip"
     assert pd.Timestamp(requests_seen[0]["end"]) <= pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=15)
+
+
+
+def test_401_stops_snapshot_batches_and_identifies_authentication():
+    import requests
+    import pytest
+    from alpaca_feed import AlpacaReadOnly, AccessError
+
+    client = AlpacaReadOnly("fake", "fake", "delayed_sip")
+    calls = []
+
+    class Response:
+        status_code = 401
+
+        def raise_for_status(self):
+            raise requests.HTTPError("Unauthorized", response=self)
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append((url, params))
+        return Response()
+
+    client.http.get = fake_get
+    with pytest.raises(AccessError, match="HTTP 401"):
+        client.snapshots(["DEMO"] * 250, batch_size=125)
+    assert len(calls) == 1
+
+
+def test_403_is_reported_as_data_access_restriction():
+    import requests
+    import pytest
+    from alpaca_feed import AlpacaReadOnly, AccessError
+
+    client = AlpacaReadOnly("fake", "fake", "sip")
+
+    class Response:
+        status_code = 403
+
+        def raise_for_status(self):
+            raise requests.HTTPError("Forbidden", response=self)
+
+    client.http.get = lambda url, params=None, timeout=None: Response()
+    with pytest.raises(AccessError, match="HTTP 403"):
+        client.snapshots(["DEMO"])
+
+
+def test_historical_sip_is_independent_of_live_snapshot_feed():
+    from alpaca_feed import AlpacaReadOnly
+
+    client = AlpacaReadOnly("synthetic", "synthetic", "iex")
+    params_seen = []
+
+    def fake_get(url, params=None):
+        params_seen.append(dict(params))
+        return {"bars": []}
+
+    client._get = fake_get
+    client.bars("DEMO", days=2, historical_feed="sip")
+    assert params_seen[-1]["feed"] == "sip"
+    client.bars("DEMO", days=2, historical_feed="iex")
+    assert params_seen[-1]["feed"] == "iex"
