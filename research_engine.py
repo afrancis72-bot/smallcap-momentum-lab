@@ -43,7 +43,7 @@ def snapshot_table(assets, snapshots, settings):
         if quote_time:
             try:
                 t = datetime.fromisoformat(quote_time.replace("Z", "+00:00"))
-                fresh = 0 <= (datetime.now(timezone.utc) - t).total_seconds() <= 600
+                fresh = 0 <= (datetime.now(timezone.utc) - t).total_seconds() <= settings.get("max_age_minutes", 10) * 60
             except ValueError:
                 pass
         reasons = []
@@ -103,10 +103,12 @@ def vwap_bars(bars):
     if bars.empty:
         bars["vwap"] = pd.Series(dtype=float)
         return bars
+    # Session VWAP resets at 9:30 ET; premarket volume must not bias it.
+    regular = bars["clock"].between(570, 960)
     typical = (bars["high"] + bars["low"] + bars["close"]) / 3
-    cum_pv = (typical * bars["volume"]).groupby(bars["day"]).cumsum()
-    cum_v = bars["volume"].groupby(bars["day"]).cumsum()
-    bars["vwap"] = cum_pv / cum_v.where(cum_v > 0)
+    cum_pv = ((typical * bars["volume"]).where(regular, 0)).groupby(bars["day"]).cumsum()
+    cum_v = bars["volume"].where(regular, 0).groupby(bars["day"]).cumsum()
+    bars["vwap"] = (cum_pv / cum_v.where(cum_v > 0)).where(regular)
     return bars
 
 
