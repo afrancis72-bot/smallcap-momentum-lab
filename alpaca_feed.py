@@ -2,11 +2,34 @@
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
+import re
 import requests
 
 TRADING = "https://paper-api.alpaca.markets"
 MARKET = "https://data.alpaca.markets"
 SUPPORTED_EXCHANGES = {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "NYSEARCA", "TXSE"}
+
+# Alpaca classifies exchange-listed warrants, rights, ETFs and units as us_equity.
+# Exclude them from the primary common-stock research universe, including sub-$1 symbols.
+_NON_COMMON_INSTRUMENT = re.compile(
+    r"\\b(warrants?|rights?|units?|preferred|preference shares?|"
+    r"exchange.traded funds?|ETFs?|ETNs?|exchange.traded notes?|"
+    r"notes? due [0-9]|debentures?|closed.end funds?)\\b",
+    flags=re.IGNORECASE,
+)
+_NON_COMMON_SUFFIX = re.compile(r"(?:[.\\-](?:WS?|RT?|U|P|PR))$", re.IGNORECASE)
+
+
+def is_common_equity_asset(asset):
+    if (asset.get("status") != "active" or asset.get("class") != "us_equity"
+        or asset.get("exchange") not in SUPPORTED_EXCHANGES
+        or asset.get("tradable") is not True
+        or not asset.get("symbol")):
+        return False
+    name = str(asset.get("name") or "")
+    symbol = str(asset.get("symbol") or "")
+    return not (_NON_COMMON_INSTRUMENT.search(name) or _NON_COMMON_SUFFIX.search(symbol))
+
 
 
 class DataError(RuntimeError):
@@ -44,10 +67,7 @@ class AlpacaReadOnly:
 
     def assets(self):
         result = self._get(TRADING + "/v2/assets", {"status": "active", "asset_class": "us_equity"})
-        return [a for a in result if a.get("status") == "active"
-                and a.get("class") == "us_equity"
-                and a.get("exchange") in SUPPORTED_EXCHANGES
-                and a.get("symbol") and a.get("tradable") is True]
+        return [a for a in result if is_common_equity_asset(a)]
 
     def snapshots(self, symbols, batch_size=125):
         """Batched GET; failed batch becomes a visible coverage gap, never fake zeros."""
