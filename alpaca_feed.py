@@ -92,9 +92,12 @@ class AlpacaReadOnly:
             raise DataError("Invalid ticker symbol.")
         end = datetime.now(timezone.utc) - timedelta(minutes=16)
         start = end - timedelta(days=int(days))
+        # 'delayed_sip' is a latest/snapshot feed, NOT a historical bars feed.
+        # Full-exchange historical bars older than 15 minutes use feed='sip'.
+        historical_feed = "sip" if self.feed == "delayed_sip" else self.feed
         params = {
             "start": start.isoformat(), "end": end.isoformat(),
-            "timeframe": "1Min", "limit": 10000, "feed": self.feed,
+            "timeframe": "1Min", "limit": 10000, "feed": historical_feed,
             "adjustment": "raw", "sort": "asc",
         }
         bars, truncated = [], False
