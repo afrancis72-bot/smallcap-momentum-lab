@@ -64,3 +64,54 @@ def test_snapshot_rejects_wide_spread_and_preserves_penny_floor():
     assert result.iloc[0]["Price"] == 0.25
     assert result.iloc[0]["Status"] == "Exclude"
     assert "Spread too wide" in result.iloc[0]["Reason"]
+
+
+def test_after_hours_recent_session_watchlist_not_live_signal():
+    # 18:08 ET, with a same-day 16:00 ET trade/quote.
+    now = datetime(2026, 11, 2, 23, 8, tzinfo=timezone.utc)
+    asset = [{"symbol": "DEMO", "name": "Illustrative Ordinary Shares", "exchange": "NASDAQ"}]
+    snapshot = {"DEMO": {
+        "latestTrade": {"p": 2.40, "t": "2026-11-02T21:00:01Z"},
+        "dailyBar": {"v": 100_000, "t": "2026-11-02T21:00:00Z"},
+        "prevDailyBar": {"c": 2.00},
+        "latestQuote": {"bp": 2.39, "ap": 2.41, "t": "2026-11-02T21:00:00Z"},
+    }}
+    settings = dict(min_price=0.10, max_price=25, min_gap=5,
+                    min_dollar_volume=15_000, max_spread=1,
+                    max_age_minutes=36 * 60, now=now)
+    after_hours = snapshot_table(asset, snapshot, settings)
+    assert after_hours.iloc[0]["Status"] == "Review"
+    assert after_hours.iloc[0]["Price age (min)"] >= 120
+    # The same data MUST NOT be marked usable by the intraday mode.
+    settings["max_age_minutes"] = 10
+    intraday = snapshot_table(asset, snapshot, settings)
+    assert intraday.iloc[0]["Status"] == "Exclude"
+    assert "too old" in intraday.iloc[0]["Reason"]
+
+
+def test_missing_quote_remains_explicit_watch_not_liquid_review():
+    now = datetime(2026, 11, 2, 23, 8, tzinfo=timezone.utc)
+    assets = [{"symbol": "DEMO", "name": "Ordinary Shares", "exchange": "NASDAQ"}]
+    snapshot = {"DEMO": {
+        "latestTrade": {"p": 2.40, "t": "2026-11-02T21:00:00Z"},
+        "dailyBar": {"v": 100_000},
+        "prevDailyBar": {"c": 2.00},
+    }}
+    row = snapshot_table(assets, snapshot,
+                         dict(min_price=0.10, max_price=25, min_gap=5,
+                              min_dollar_volume=10000, max_spread=1,
+                              max_age_minutes=2160, now=now)).iloc[0]
+    assert row["Status"] == "Watch — verify quote"
+    assert "Bid/ask unavailable" in row["Reason"]
+
+
+def test_unlisted_instruments_removed_but_subdollar_common_stock_kept():
+    from alpaca_feed import is_common_equity_asset
+    common = {"symbol": "DEMO", "name": "Demo Inc. Class A Ordinary Shares",
+              "exchange": "NASDAQ", "class": "us_equity",
+              "status": "active", "tradable": True}
+    assert is_common_equity_asset(common)
+    for name in ("Demo Inc Warrant", "Demo Corp. Rights", "Demo Units",
+                 "Demo Index ETF"):
+        assert not is_common_equity_asset({**common, "name": name})
+    assert not is_common_equity_asset({**common, "symbol": "DEMO.WS"})
