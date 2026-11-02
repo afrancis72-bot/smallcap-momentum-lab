@@ -1,14 +1,36 @@
 # Small-Cap Momentum Lab
 
-**Private educational market-research prototype** for parent-supervised, small-cap and exchange-listed penny-stock study. This project is completely separate from Team AI² Pro.
+**Educational market-research prototype** for parent-supervised, small-cap and exchange-listed penny-stock study. This project is completely separate from Team AI² Pro.
 
 ## What works in this prototype
 
 - **On-demand automatic discovery.** With Alpaca *paper-account* API keys, the app requests the active, tradable exchange-listed U.S. stock universe and batched quote/price snapshots. No manual stock-symbol list needed. Default price filter **$0.10 to $25.00**. Filters include price move, IEX dollar turnover, quote spread and quote freshness.
-- **Manual ticker research.** Read-only historical 1-minute candles, VWAP, bid/ask and original-source headlines. Last ~15 minutes of historical bars can be unavailable on the free tier.
-- **Historical replay.** A transparent, long-only 5-minute opening-range breakout paper strategy using downloaded bars or a user-uploaded CSV.
+- **Manual ticker research.** Read-only historical 1-minute candles with *premarket, regular and after-hours* filters, session-reset VWAP, session-level volume, bid/ask and original-source headlines. Last ~15 minutes of historical bars can be unavailable on the free tier.
+- **Historical replay.** A transparent, long-only 5-minute opening-range breakout paper strategy with selectable premarket, regular or after-hours session, using downloaded bars or a user-uploaded CSV.
 - **Paper journal.** Record hypothetical entries/exits without any brokerage order access. Import/export CSV for a persistent backup.
 - **Honest provenance.** IEX is only one exchange: the free scanner does NOT know consolidated trade volume or true whole-market relative volume, and its ranking is NOT a probability of winning.
+
+
+## Premarket and after-hours support (Nov 2026)
+
+**Implemented:** price-session validation in the automatic stock scanner, per-ticker session-specific historical candlestick charts, session-level OHLC/volume/VWAP summaries, and distinct opening-range backtests for premarket, regular, and after-hours.
+
+| Stock session (New York time) | Hours | Current feature |
+|---|---|---|
+| Premarket | 4:00–9:29 a.m. ET | Current-session snapshot candidates and historical session research |
+| Regular | 9:30 a.m.–3:59 p.m. ET | Current-session snapshot candidates and historical session research |
+| After-hours | 4:00–7:59 p.m. ET | Current-session snapshot candidates and historical session research |
+| Overnight / closed | 8:00 p.m.–3:59 a.m. ET | **Retrospective scan only**, not supported by the current IEX/SIP session analytics |
+
+Alpaca offers a distinct overnight/BOATS data feed for eligible securities, but **this app does not currently connect that feed or support overnight trading**.
+
+The **Automatic** freshness mode requires a timestamped price printed during the **current Eastern-time session** when that session is open, and checks its age (10 minutes in regular hours, 20 minutes in extended hours on IEX, feed-dependent). **Historical snapshot review** allows older observations but never labels them live. The scanner calculates change from Alpaca's provider-reported previous daily close, **not the 4 p.m. closing price**, and its daily volume/turnover are **not isolated to the selected extended session**. To examine actual per-session volume and price changes, use Ticker research, which partitions each 1-minute bar by Eastern-time session.
+
+On the ticker chart choose **All sessions**, **Premarket**, **Regular**, or **After-hours**. The session summary includes each session's observed opening price, high, low, last price, volume *from the feed*, and a session-reset VWAP. In the backtest, choose the session to evaluate; the first five minute bars from 4 a.m., 9:30 a.m., or 4 p.m. must all exist, or that date has no replay signal. This is intentionally conservative: free IEX minute data can be extremely sparse outside regular hours.
+
+**Liquidity caution:** premarket and after-hours trading can have much wider spreads, fewer available shares, gap risk, and halts. Our app neither places any orders nor guarantees that paper-trading fills could have occurred. Results need reliable consolidated data and quote-level execution modeling before any claims of an advantage.
+
+References: [Alpaca extended hours](https://alpaca.markets/support/extended-hours-trading), [Alpaca overnight data](https://docs.alpaca.markets/us/docs/245-trading-for-trading-api).
 
 ## Start locally
 
