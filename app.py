@@ -8,6 +8,7 @@ import streamlit as st
 
 from alpaca_feed import AlpacaReadOnly, DataError, is_common_equity_asset
 from live_sip import SIPLiveStream
+from free_watchlist import FreeWatchlist
 from research_engine import snapshot_table, prepare_bars, backtest_opening_range, trade_summary
 from sessions import market_session, SESSION_CLOCK, session_vwap, session_summary, feed_market_active
 
@@ -51,6 +52,14 @@ with st.sidebar:
         except DataError as exc:
             st.error("SIP entitlement not verified: " + str(exc))
     st.divider()
+    st.subheader("Free live watchlist (optional)")
+    finnhub_key = st.text_input(
+        "Finnhub free API key", type="password",
+        value=secret_value("FINNHUB_API_KEY"),
+        help="Optional. For a free trade stream from Finnhub. Do not enter this key in GitHub source files.",
+    )
+    st.caption("Finnhub free trades are NOT guaranteed to show every premarket/after-hours trade. Always inspect each event timestamp.")
+    st.divider()
     st.subheader("Discovery filters")
     min_price = st.number_input("Min price ($)", min_value=0.10, max_value=25.0, value=0.10, step=0.10)
     max_price = st.number_input("Max price ($)", min_value=0.10, max_value=100.0, value=25.0, step=1.0)
@@ -88,6 +97,47 @@ scan_tab, ticker_tab, replay_tab, journal_tab = st.tabs(
     ["🔎 Automatic scanner", "📊 Ticker research", "🧪 Backtest", "📝 Paper journal"])
 
 with scan_tab:
+    st.subheader("🆓 Zero-cost extended-hours workflow")
+    st.write("**Find movers:** use the free TradingView stock screener's Extended Hours columns for premarket/postmarket move, volume and price. **Watch the tickers:** paste them below to monitor genuine trade events from Finnhub's free partial-market stream. **Research:** keep using Alpaca's existing free IEX and delayed historical SIP data.")
+    st.link_button("Open TradingView free extended-hours screener", "https://www.tradingview.com/screener/")
+    st.caption("TradingView is a separate website, not a third-party data API. We do not scrape or automate its proprietary screen. Finnhub's free watchlist stream is NOT consolidated SIP and coverage of 4 a.m.–8 p.m. is unverified: no messages means no verified live trade.")
+    free_watch_symbols = st.text_input(
+        "Watch symbols — comma-separated (e.g. INO,PERI,VCIG)",
+        key="free_watch_symbols",
+        help="Select tickers in TradingView and paste them here. Up to 40.",
+    )
+    free_symbols = list(dict.fromkeys(
+        x.strip().upper() for x in free_watch_symbols.replace(" ", ",").split(",") if x.strip()
+    ))[:40]
+    fstart, fstop = st.columns(2)
+    if fstart.button("Start FREE live ticker watch", disabled=not finnhub_key or not free_symbols, type="primary"):
+        prior_free = st.session_state.get("free_watch_stream")
+        if prior_free:
+            prior_free.stop()
+        try:
+            free_stream = FreeWatchlist(finnhub_key, free_symbols)
+            st.session_state["free_watch_stream"] = free_stream
+            free_stream.start()
+        except ValueError as exc:
+            st.error(str(exc))
+    if fstop.button("Stop FREE ticker watch", disabled=not st.session_state.get("free_watch_stream")):
+        st.session_state["free_watch_stream"].stop()
+        st.session_state.pop("free_watch_stream", None)
+
+    @st.fragment(run_every="3s")
+    def render_free_watchlist():
+        stream = st.session_state.get("free_watch_stream")
+        if stream:
+            st.caption("Free watch status: " + stream.status + " · " +
+                       datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p ET"))
+            frame_free = pd.DataFrame(stream.snapshot())
+            if not frame_free.empty:
+                st.dataframe(frame_free, use_container_width=True, hide_index=True)
+                st.caption("Fresh means an actual observed current-session trade under two minutes old, NOT full-market coverage. Feed may not support thin premarket/after-hours tickers. No bid/ask or execution-liquidity confirmation.")
+        else:
+            st.info("Enter a free Finnhub key in the sidebar and at least one ticker above. No paid subscription is needed.")
+    render_free_watchlist()
+    st.divider()
     st.subheader("Market discovery (on-demand)")
     st.write("Scans Alpaca's **active exchange-listed common-stock universe** using batched snapshots. The full-universe scan is on-demand; the optional SIP watchlist below continuously streams selected symbols.")
     st.caption("Current session: " + current_session + " · " +
