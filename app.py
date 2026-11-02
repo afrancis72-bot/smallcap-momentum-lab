@@ -115,7 +115,7 @@ with scan_tab:
                     st.error(str(exc))
     if "scan_result" in st.session_state:
         frame, universe, requested, received, errors, ts, source = st.session_state["scan_result"]
-        passing = frame[frame["Status"].isin(["Review", "Watch — verify quote"])] if not frame.empty else frame
+        passing = frame[frame["Status"].isin(["Review", "Watch — verify quote", "Corporate-action check"])] if not frame.empty else frame
         ready = frame[frame["Status"] == "Review"] if not frame.empty else frame
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Common-stock universe", f"{universe:,}")
@@ -129,8 +129,13 @@ with scan_tab:
         if received < requested or requested < universe:
             st.warning("Data incomplete: not every requested ticker returned a usable snapshot.")
         st.write("**Research candidates**")
-        st.caption("Review = price, volume, and quote filters met. Watch — verify quote = momentum screen met, but bid/ask data is unavailable or outdated. Neither is a trading recommendation.")
+        st.caption("Review = basic filters met, not a live recommendation. Watch = bid/ask liquidity requires verification. Corporate-action check = unusually large raw price gain; verify splits and comparability of the previous close before interpreting the change.")
         st.dataframe(passing, use_container_width=True, hide_index=True)
+        if not passing.empty:
+            events = passing[passing["Status"] == "Corporate-action check"]
+            if not events.empty:
+                st.warning(f"{len(events)} symbols have extreme raw price changes and must be checked for splits/corporate actions. These are NOT ordinary momentum signals.")
+                st.dataframe(events[["Ticker", "Name", "Price", "Change %", "Price session ET", "Reason"]], use_container_width=True, hide_index=True)
         if passing.empty:
             st.warning("No candidates met the current price-move, turnover, data-age and spread rules. Review the exclusion reasons below; relaxing any setting does NOT establish safety or profitability.")
         if not frame.empty:
