@@ -39,6 +39,17 @@ with st.sidebar:
                 st.warning("Request succeeded, but no AAPL snapshot came back. The API key was not explicitly rejected.")
         except DataError as exc:
             st.error(str(exc))
+    if st.button("Test real-time SIP entitlement (one stock)", disabled=not (key and secret)):
+        try:
+            verified, _, errors = AlpacaReadOnly(key, secret, "sip").snapshots(["AAPL"])
+            if verified.get("AAPL"):
+                st.success("SIP snapshot access confirmed. Use SIP (paid) and Start real-time SIP watch for WebSocket verification.")
+            else:
+                st.warning("SIP request returned no AAPL snapshot. Real-time entitlement is not confirmed.")
+            if errors:
+                st.warning("; ".join(errors))
+        except DataError as exc:
+            st.error("SIP entitlement not verified: " + str(exc))
     st.divider()
     st.subheader("Discovery filters")
     min_price = st.number_input("Min price ($)", min_value=0.10, max_value=25.0, value=0.10, step=0.10)
