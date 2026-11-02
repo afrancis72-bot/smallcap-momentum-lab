@@ -309,3 +309,28 @@ def test_historical_sip_is_independent_of_live_snapshot_feed():
     assert params_seen[-1]["feed"] == "sip"
     client.bars("DEMO", days=2, historical_feed="iex")
     assert params_seen[-1]["feed"] == "iex"
+
+
+
+def test_extreme_raw_return_requires_corporate_action_check():
+    # Synthetic shape of a split-contaminated previous-close comparison.
+    now = datetime(2026, 11, 2, 23, 33, tzinfo=timezone.utc)
+    assets = [{"symbol": "DEMO", "name": "Common shares", "exchange": "NASDAQ"}]
+    snapshots = {"DEMO": {
+        "latestTrade": {"p": 6.78, "t": "2026-11-02T21:44:10Z"},
+        "dailyBar": {"v": 100_000},
+        "prevDailyBar": {"c": 0.174},
+        "latestQuote": {"bp": 6.77, "ap": 6.79, "t": "2026-11-02T21:44:10Z"},
+    }}
+    settings = dict(min_price=0.10, max_price=25,
+                    min_gap=5, min_dollar_volume=15_000, max_spread=1,
+                    max_age_minutes=2160, now=now)
+    frame = snapshot_table(assets, snapshots, settings)
+    row = frame.iloc[0]
+    assert row["Change %"] > 3000
+    assert row["Status"] == "Corporate-action check"
+    assert "verify splits/corporate actions" in row["Reason"]
+    # Ordinary gains aren't automatically corporate actions.
+    snapshots["DEMO"]["prevDailyBar"]["c"] = 5.50
+    again = snapshot_table(assets, snapshots, settings)
+    assert again.iloc[0]["Status"] == "Review"
