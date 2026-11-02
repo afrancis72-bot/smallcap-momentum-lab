@@ -8,7 +8,7 @@ import streamlit as st
 
 from alpaca_feed import AlpacaReadOnly, DataError, is_common_equity_asset
 from research_engine import snapshot_table, prepare_bars, backtest_opening_range, trade_summary
-from sessions import market_session, SESSION_CLOCK, session_vwap, session_summary
+from sessions import market_session, SESSION_CLOCK, session_vwap, session_summary, feed_market_active
 
 st.set_page_config(page_title="Momentum Lab", page_icon="📈", layout="wide")
 st.title("📈 Small-Cap Momentum Lab")
@@ -28,7 +28,7 @@ with st.sidebar:
     feed_name = st.selectbox("Data feed", ["Free IEX (partial coverage)", "SIP (paid)", "Delayed SIP"])
     feed = {"Free IEX (partial coverage)": "iex", "SIP (paid)": "sip",
             "Delayed SIP": "delayed_sip"}[feed_name]
-    st.caption("These keys only authorize GET market data and asset discovery in this app.")
+    st.caption("IEX runs 8 a.m.–5 p.m. ET, not the full 4 a.m.–8 p.m. extended session. Delayed SIP may cover the complete session if your subscription permits. This app only uses GET requests.")
     st.divider()
     st.subheader("Discovery filters")
     min_price = st.number_input("Min price ($)", min_value=0.10, max_value=25.0, value=0.10, step=0.10)
@@ -56,6 +56,7 @@ else:
     max_age_minutes = (25 if feed == "delayed_sip" else
                        (10 if current_session == "Regular" else 20)) if session_open else 36 * 60
 require_active_session = session_open and mode != "Recent-session research (36 hours)"
+feed_market_open = feed_market_active(feed, now_et)
 
 
 client = AlpacaReadOnly(key, secret, feed) if key and secret else None
@@ -71,6 +72,8 @@ with scan_tab:
     st.caption("Current session: " + current_session + " · " +
                now_et.strftime("%a %b %d, %Y %I:%M %p ET") +
                " · Filter: " + mode + " · Max price age: " + str(max_age_minutes) + " minutes.")
+    if session_open and not feed_market_open:
+        st.error("**This data feed is inactive during part of extended hours.** Free IEX trades only 8:00 a.m.–5:00 p.m. ET, so it CANNOT discover 4–8 a.m. or 5–8 p.m. movers. Try delayed SIP if your account permits it; a blank IEX list does not mean there is no market activity.")
     if require_active_session:
         st.info("**Active " + current_session + " session:** only observations printed during this session today can pass. An older regular-market price cannot masquerade as an after-hours mover.")
     else:
