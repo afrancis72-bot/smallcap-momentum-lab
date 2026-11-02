@@ -1,11 +1,12 @@
 """Small-cap research dashboard. No real or simulated brokerage API orders."""
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from alpaca_feed import AlpacaReadOnly, DataError
+from alpaca_feed import AlpacaReadOnly, DataError, is_common_equity_asset
 from research_engine import snapshot_table, prepare_bars, vwap_bars, backtest_opening_range, trade_summary
 
 st.set_page_config(page_title="Momentum Lab", page_icon="📈", layout="wide")
@@ -34,6 +35,24 @@ with st.sidebar:
     min_gap = st.slider("Minimum move from previous close (%)", 0, 30, 5)
     min_turnover = st.number_input("Minimum IEX dollar turnover ($)", 0, 1_000_000, 15_000, 5_000)
     max_spread = st.slider("Maximum IEX spread (%)", 0.25, 10.0, 1.0, 0.25)
+    st.divider()
+    mode = st.selectbox("Snapshot freshness mode", [
+        "Automatic (recommended)",
+        "Intraday only (10 min)",
+        "Recent-session research (36 hours)",
+    ])
+    st.caption("After-hours review can show closing-session data. It is never a live trade signal.")
+
+now_et = datetime.now(ZoneInfo("America/New_York"))
+market_minutes = now_et.hour * 60 + now_et.minute
+is_regular_hours = now_et.weekday() < 5 and 570 <= market_minutes < 960
+if mode == "Recent-session research (36 hours)":
+    max_age_minutes = 36 * 60
+elif mode == "Intraday only (10 min)":
+    max_age_minutes = 25 if feed == "delayed_sip" else 10
+else:
+    max_age_minutes = (25 if feed == "delayed_sip" else 10) if is_regular_hours else 36 * 60
+
 
 client = AlpacaReadOnly(key, secret, feed) if key and secret else None
 if client is None:
@@ -44,7 +63,12 @@ scan_tab, ticker_tab, replay_tab, journal_tab = st.tabs(
 
 with scan_tab:
     st.subheader("Market discovery (on-demand)")
-    st.write("Scans Alpaca's **active exchange-listed stock universe**, then requests price snapshots in batches. No ticker list required. Click again to refresh; there is no background scanner or automatic alerting yet.")
+    st.write("Scans Alpaca's **active exchange-listed common-stock universe**, then requests price snapshots in batches. No ticker list required. Click again to refresh; there is no background scanner or automatic alerting yet.")
+    st.caption("Quote context: " + now_et.strftime("%a %b %d, %Y %I:%M %p ET") +
+               " · Mode: " + mode + " · Maximum accepted price age: " + str(max_age_minutes) + " minutes.")
+    if not is_regular_hours or max_age_minutes > 60:
+        st.info("**Session research, not a live trading scan:** older closing-session snapshots are permitted. Candidates require a fresh liquidity/quote check before they are usable.")
+
     if st.button("Scan exchange-listed market", type="primary", disabled=not client):
         if min_price > max_price:
             st.error("Minimum price must not exceed maximum price.")
@@ -54,13 +78,14 @@ with scan_tab:
                     assets = st.session_state.get("assets")
                     if assets is None:
                         assets = client.assets()
-                        st.session_state["assets"] = assets
+                    assets = [a for a in assets if is_common_equity_asset(a)]
+                    st.session_state["assets"] = assets
                     symbols = [a["symbol"] for a in assets]
                     snapshots, requested, errors = client.snapshots(symbols)
                     settings = {"min_price": min_price, "max_price": max_price,
                                 "min_gap": min_gap, "min_dollar_volume": min_turnover,
                                 "max_spread": max_spread,
-                                "max_age_minutes": 25 if feed == "delayed_sip" else 10}
+                                "max_age_minutes": max_age_minutes}
                     frame = snapshot_table(assets, snapshots, settings)
                     st.session_state["scan_result"] = (frame, len(symbols), requested,
                                                        len(snapshots), errors,
@@ -69,19 +94,30 @@ with scan_tab:
                     st.error(str(exc))
     if "scan_result" in st.session_state:
         frame, universe, requested, received, errors, ts, source = st.session_state["scan_result"]
-        passing = frame[frame["Status"] == "Review"] if not frame.empty else frame
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Universe", f"{universe:,}")
+        passing = frame[frame["Status"].isin(["Review", "Watch — verify quote"])] if not frame.empty else frame
+        ready = frame[frame["Status"] == "Review"] if not frame.empty else frame
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Common-stock universe", f"{universe:,}")
         c2.metric("Requested", f"{requested:,}")
         c3.metric("Received", f"{received:,}")
-        c4.metric("Passing filters", f"{len(passing):,}")
-        st.caption(f"Requested at {ts} UTC · {source} · Research ranking, NOT win probabilities.")
+        c4.metric("Research candidates", f"{len(passing):,}")
+        c5.metric("Quotes also verified", f"{len(ready):,}")
+        st.caption(f"Requested at {ts} UTC · {source} · Research ranking, NOT win probabilities. Confirm the as-of timestamps on every candidate.")
         if errors:
             st.error("Partial scan: " + "; ".join(errors[:4]))
         if received < requested or requested < universe:
             st.warning("Data incomplete: not every requested ticker returned a usable snapshot.")
-        st.write("**Candidates**")
+        st.write("**Research candidates**")
+        st.caption("Review = price, volume, and quote filters met. Watch — verify quote = momentum screen met, but bid/ask data is unavailable or outdated. Neither is a trading recommendation.")
         st.dataframe(passing, use_container_width=True, hide_index=True)
+        if passing.empty:
+            st.warning("No candidates met the current price-move, turnover, data-age and spread rules. Review the exclusion reasons below; relaxing any setting does NOT establish safety or profitability.")
+        if not frame.empty:
+            rejected = frame[frame["Status"] == "Exclude"]
+            explanations = rejected["Reason"].str.split("; ").explode().value_counts().head(7)
+            if not explanations.empty:
+                st.write("**Most frequent exclusion checks**")
+                st.dataframe(explanations.rename_axis("Check").reset_index(name="Symbols"), use_container_width=True, hide_index=True)
         st.write("**All inspected symbols, including excluded names**")
         st.dataframe(frame, use_container_width=True, hide_index=True)
         st.download_button("Download scan CSV", frame.to_csv(index=False),
