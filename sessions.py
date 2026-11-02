@@ -106,3 +106,21 @@ def session_summary(bars):
             "Last bar ET": df["timestamp"].iloc[-1].tz_convert(EASTERN).strftime("%I:%M %p"),
         })
     return pd.DataFrame(rows).sort_values(["Date", "Session"], ascending=[False, True]).reset_index(drop=True)
+
+
+
+def feed_market_active(feed, when=None):
+    """Whether the feed's exchange/session is OPERATING, not a data entitlement test.
+
+    IEX exchange opens 8:00 a.m. and closes 5:00 p.m. ET. SIP includes
+    consolidated extended-hours trading 4:00 a.m. to 8:00 p.m. ET.
+    """
+    session, local = market_session(when)
+    if local is None or local.weekday() >= 5:
+        return False
+    clock = local.hour * 60 + local.minute
+    if feed == "iex":
+        return 480 <= clock < 1020
+    if feed in {"sip", "delayed_sip"}:
+        return 240 <= clock < 1200
+    return False
