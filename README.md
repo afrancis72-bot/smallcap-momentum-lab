@@ -11,6 +11,17 @@
 - **Honest provenance.** IEX is only one exchange: the free scanner does NOT know consolidated trade volume or true whole-market relative volume, and its ranking is NOT a probability of winning.
 
 
+## Zero-cost workflow — recommended
+
+No paid data plan is needed for the following *partial-market* watchlist workflow:
+
+1. Open [TradingView's stock screener](https://www.tradingview.com/screener/). Use the **Extended Hours** fields to identify likely premarket or postmarket movers. The screen stays on TradingView; this app does not scrape or automate its data.
+2. Sign up for a **free personal Finnhub API key** at [Finnhub](https://finnhub.io/). Enter the key under "Free live watchlist" in the Streamlit app sidebar or store it in private Streamlit Secrets as `FINNHUB_API_KEY = "..."`. Never commit a key to the public repository.
+3. Paste up to **40** tickers in "Zero-cost extended-hours workflow" and select **Start FREE live ticker watch**. The app displays Finnhub WebSocket trade events, checking the event's actual date, session and age. A status of "Fresh current-session print" requires a real timestamp no more than two minutes old. This is NOT consolidated SIP and quotes/bid-ask are not provided; coverage during extended hours is not guaranteed, especially for illiquid stocks.
+4. Use the existing **Alpaca free IEX** snapshots or historical SIP bars more than 15 minutes old to research candidates. Free IEX does not see the whole extended-hours market.
+
+**Important distinction:** a free *screening website* is not an API licensed for automated extraction. Real-time complete, exchange-consolidated 4 a.m.–8 p.m. coverage could not be verified as available at $0 for use inside this app. Finnhub's free stream is a best-effort watchlist experiment, not an exhaustive real-time market scanner. It only runs while Streamlit is awake; there is no trade placement. Check each ticker's quoted bid/ask, news, corporate actions, and order-book liquidity with an authorized brokerage source before any action.
+
 ## Real-time 4 a.m.–8 p.m. market monitoring (paid SIP)
 
 **Real-time market-wide extended-hours discovery requires Alpaca Algo Trader Plus (SIP) entitlement**; IEX is partial-market and does not operate throughout extended hours. Choosing SIP in the app cannot grant a paid subscription. A successful free IEX key test is not proof that SIP is authorized.
