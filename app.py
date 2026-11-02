@@ -59,7 +59,8 @@ with scan_tab:
                     snapshots, requested, errors = client.snapshots(symbols)
                     settings = {"min_price": min_price, "max_price": max_price,
                                 "min_gap": min_gap, "min_dollar_volume": min_turnover,
-                                "max_spread": max_spread}
+                                "max_spread": max_spread,
+                                "max_age_minutes": 25 if feed == "delayed_sip" else 10}
                     frame = snapshot_table(assets, snapshots, settings)
                     st.session_state["scan_result"] = (frame, len(symbols), requested,
                                                        len(snapshots), errors,
