@@ -105,7 +105,7 @@ def snapshot_table(assets, snapshots, settings):
         if extreme_move:
             soft_reasons.append("Extreme price move: verify splits/corporate actions")
         if turnover < settings["min_dollar_volume"]:
-            hard_reasons.append("IEX turnover below threshold")
+            hard_reasons.append("Feed day turnover below threshold")
         if not recent:
             hard_reasons.append("Price data too old for selected mode")
         if require_active_session and not matches_active_session:
@@ -133,7 +133,7 @@ def snapshot_table(assets, snapshots, settings):
             "Price": round(price, 4), "Change %": round(gap, 2),
             "Feed day shares (not session)": int(vol),
             "Feed day turnover $ (not session)": round(turnover, 2),
-            "IEX spread %": round(spread_pct, 2) if spread_pct is not None else None,
+            "Feed spread %": round(spread_pct, 2) if spread_pct is not None else None,
             "Price source": price_source, "Price session ET": observed_session,
             "Price data UTC": str(price_time or ""), "Price age (min)": price_age,
             "Quote age (min)": quote_age, "Timely for mode": recent,
