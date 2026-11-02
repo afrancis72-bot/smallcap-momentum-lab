@@ -98,6 +98,12 @@ def snapshot_table(assets, snapshots, settings):
         soft_reasons = []
         if gap < settings["min_gap"]:
             hard_reasons.append("Move below threshold")
+        # A raw return of several hundred percent is often contaminated by
+        # reverse splits or another corporate action. Keep it visible but
+        # never rank it as an ordinary momentum candidate without checking.
+        extreme_move = gap >= settings.get("corporate_action_review_pct", 300)
+        if extreme_move:
+            soft_reasons.append("Extreme price move: verify splits/corporate actions")
         if turnover < settings["min_dollar_volume"]:
             hard_reasons.append("IEX turnover below threshold")
         if not recent:
@@ -116,7 +122,12 @@ def snapshot_table(assets, snapshots, settings):
         turn_score = min(35.0, max(0.0, math.log10(max(turnover, 1)) - 3) * 10)
         spread_score = max(0.0, 30.0 * (1 - (spread_pct or 100) / max(settings["max_spread"], 0.01)))
         score = round(gap_score + turn_score + spread_score, 1)
-        status = "Exclude" if hard_reasons else ("Watch — verify quote" if soft_reasons else "Review")
+        status = (
+            "Exclude" if hard_reasons else
+            "Corporate-action check" if extreme_move else
+            "Watch — verify quote" if soft_reasons else
+            "Review"
+        )
         rows.append({
             "Ticker": sym, "Name": asset.get("name", ""), "Exchange": asset.get("exchange", ""),
             "Price": round(price, 4), "Change %": round(gap, 2),
@@ -135,7 +146,8 @@ def snapshot_table(assets, snapshots, settings):
             "Ticker", "Price", "Change %", "Status", "Reason",
         ])
     frame = pd.DataFrame(rows)
-    order = {"Review": 0, "Watch — verify quote": 1, "Exclude": 2}
+    order = {"Review": 0, "Watch — verify quote": 1,
+             "Corporate-action check": 2, "Exclude": 3}
     frame["_order"] = frame["Status"].map(order)
     return frame.sort_values(["_order", "Research score"], ascending=[True, False]).drop(columns=["_order"]).reset_index(drop=True)
 
