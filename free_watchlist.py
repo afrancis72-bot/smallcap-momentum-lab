@@ -11,6 +11,7 @@ from urllib.parse import quote
 import json
 import re
 import websocket
+import requests
 
 from sessions import market_session, SESSION_CLOCK
 
@@ -142,3 +143,71 @@ class FreeWatchlist:
                            "No trade received"),
             })
         return rows
+
+
+
+def _rest_quote_row(symbol, payload, now):
+    """Diagnostic only: quote is not assumed to be extended-hours or real-time."""
+    price = payload.get("c")
+    stamp_raw = payload.get("t")
+    try:
+        stamp = datetime.fromtimestamp(int(stamp_raw), tz=timezone.utc) if stamp_raw else None
+        price = float(price) if price is not None else None
+        prev_close = float(payload["pc"]) if payload.get("pc") else None
+    except (ValueError, TypeError, OverflowError, OSError):
+        stamp, price, prev_close = None, None, None
+    if price is not None and price <= 0:
+        price = None
+    current_session, now_local = market_session(now)
+    observed, last_local = market_session(stamp) if stamp else ("Unknown", None)
+    age = (now - stamp).total_seconds() / 60 if stamp else None
+    same_session = bool(
+        current_session in SESSION_CLOCK and last_local is not None
+        and last_local.date() == now_local.date()
+        and observed == current_session
+    )
+    fresh = bool(price is not None and same_session and age is not None and 0 <= age <= 2)
+    move = (100 * (price / prev_close - 1)
+            if price is not None and prev_close and prev_close > 0 else None)
+    return {
+        "Ticker": symbol,
+        "Free REST price $": round(price, 4) if price is not None else None,
+        "Previous close $": round(prev_close, 4) if prev_close else None,
+        "From previous close %": round(move, 2) if move is not None else None,
+        "Last quote time ET": last_local.strftime("%m/%d %I:%M:%S %p") if last_local else "Unavailable",
+        "Quote session": observed,
+        "Age (min)": round(age, 2) if age is not None else None,
+        "Status": ("Recent current-session quote (partial feed)" if fresh
+                   else "Stale / other session" if price is not None
+                   else "No valid quote"),
+    }
+
+
+def diagnose_free_quotes(token, symbols, now=None):
+    """On-demand read-only requests; no undocumented scraping or auto polling."""
+    now = now or datetime.now(timezone.utc)
+    rows = []
+    clean = list(dict.fromkeys(str(sym).upper().strip() for sym in symbols))
+    for sym in clean[:20]:
+        if not _SYMBOL.fullmatch(sym):
+            continue
+        try:
+            response = requests.get(
+                "https://finnhub.io/api/v1/quote",
+                params={"symbol": sym},
+                headers={"X-Finnhub-Token": token},
+                timeout=8,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid quote response")
+            rows.append(_rest_quote_row(sym, payload, now))
+        except (requests.RequestException, ValueError):
+            rows.append({
+                "Ticker": sym, "Free REST price $": None, "Previous close $": None,
+                "From previous close %": None, "Last quote time ET": "Unavailable",
+                "Quote session": "Unknown", "Age (min)": None,
+                "Status": "REST unavailable or not authorized",
+            })
+    return rows
