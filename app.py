@@ -8,7 +8,7 @@ import streamlit as st
 
 from alpaca_feed import AlpacaReadOnly, DataError, is_common_equity_asset
 from live_sip import SIPLiveStream
-from free_watchlist import FreeWatchlist
+from free_watchlist import FreeWatchlist, diagnose_free_quotes
 from research_engine import snapshot_table, prepare_bars, backtest_opening_range, trade_summary
 from sessions import market_session, SESSION_CLOCK, session_vwap, session_summary, feed_market_active
 
@@ -137,6 +137,20 @@ with scan_tab:
         else:
             st.info("Enter a free Finnhub key in the sidebar and at least one ticker above. No paid subscription is needed.")
     render_free_watchlist()
+    st.caption("Why might a stream be connected but empty? Free US trades generally use IEX, which has limited extended hours (8 a.m.–5 p.m. ET). A connected socket is NOT proof of current market coverage. Try the quote-timestamp diagnostic below; it never treats an old price as live.")
+    if st.button("Check FREE quote timestamps", disabled=not finnhub_key or not free_symbols):
+        with st.spinner("Checking Finnhub free quotes and provider timestamps…"):
+            st.session_state["free_quote_diagnostic"] = diagnose_free_quotes(
+                finnhub_key, free_symbols
+            )
+            st.session_state["free_quote_symbols"] = tuple(free_symbols)
+    diagnostic = st.session_state.get("free_quote_diagnostic")
+    if diagnostic:
+        if tuple(free_symbols) != st.session_state.get("free_quote_symbols"):
+            st.info("Ticker list changed. Check FREE quote timestamps again to refresh these results.")
+        else:
+            st.dataframe(pd.DataFrame(diagnostic), use_container_width=True, hide_index=True)
+            st.caption("On-demand Finnhub REST only, maximum 20 tickers per check. Quote time is the provider's timestamp; 0 or old data is not live. Previous-close change is NOT the after-hours-only move. This does not verify consolidated after-hours coverage.")
     st.divider()
     st.subheader("Market discovery (on-demand)")
     st.write("Scans Alpaca's **active exchange-listed common-stock universe** using batched snapshots. The full-universe scan is on-demand; the optional SIP watchlist below continuously streams selected symbols.")
